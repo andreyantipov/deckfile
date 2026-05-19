@@ -1,9 +1,12 @@
 //! deckfile — declarative Stream Deck controller.
 //!
-//! Subcommands:
-//!   deckfile run [-f PATH] [-d]     run the daemon (reads deckfile.yaml)
-//!   deckfile validate [PATH]        parse-check without touching hardware
-//!   deckfile devices                list connected Stream Deck devices
+//! Default action (no subcommand) runs the daemon. Subcommands:
+//!   deckfile validate [PATH]  parse-check without touching hardware
+//!   deckfile devices          list connected Stream Deck devices
+//!
+//! Top-level flags:
+//!   -f, --config PATH    explicit deckfile.yaml path
+//!   -d, --daemonize      detach from controlling terminal (fork + setsid)
 //!
 //! Future: `deckfile mcp` — MCP server letting LLM agents edit deckfile.yaml.
 
@@ -18,25 +21,23 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Path to deckfile.yaml.
+    /// Lookup if omitted: $DECKFILE → ./deckfile.yaml → $XDG_CONFIG_HOME/deckfile/deckfile.yaml
+    #[arg(short = 'f', long = "config", global = true)]
+    config: Option<PathBuf>,
+
+    /// Detach from the terminal: fork + setsid + close stdio. Not needed
+    /// under systemd (Type=simple already backgrounds the process).
+    #[arg(short = 'd', long, global = true)]
+    daemonize: bool,
+
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the daemon: listen to Stream Deck, dispatch shell commands
-    Run {
-        /// Path to deckfile.yaml.
-        /// Lookup if omitted: $DECKFILE → ./deckfile.yaml → $XDG_CONFIG_HOME/deckfile/deckfile.yaml
-        #[arg(short = 'f', long = "config")]
-        config: Option<PathBuf>,
-
-        /// Daemonize: detach from the terminal (fork + setsid + close stdio).
-        /// Not needed under systemd (`Type=simple`).
-        #[arg(short = 'd', long)]
-        daemonize: bool,
-    },
-    /// Parse-check the deckfile.yaml without connecting to a device
+    /// Parse-check a deckfile.yaml without connecting to a device
     Validate {
         path: Option<PathBuf>,
     },
@@ -54,22 +55,18 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Run { config, daemonize } => {
-            if daemonize {
+        None => {
+            // Default: run the daemon.
+            if cli.daemonize {
                 detach().context("daemonize")?;
             }
-            daemon::run(config)
+            daemon::run(cli.config)
         }
-        Cmd::Validate { path } => validate(path),
-        Cmd::Devices => devices(),
+        Some(Cmd::Validate { path }) => validate(path.or(cli.config)),
+        Some(Cmd::Devices) => devices(),
     }
 }
 
-/// Detach from controlling terminal. Equivalent to `daemon(nochdir=1, noclose=0)`:
-/// fork once → setsid → fork again so we can't reacquire a controlling terminal →
-/// redirect stdio to /dev/null. Logs (tracing) still write to /dev/null after this,
-/// so set RUST_LOG=… and run under a process supervisor for visibility, or use
-/// `systemd --user` instead.
 fn detach() -> Result<()> {
     // daemon(nochdir=true, noclose=false): fork + setsid + redirect stdio
     // to /dev/null. Don't chdir to / so the daemon inherits the current

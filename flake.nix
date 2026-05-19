@@ -49,17 +49,19 @@
             hidapi
             libusb1
             udev
-            # DejaVu для дефолтного font fallback в runtime через env.
+            # Symbols Nerd Font — contains Material Design, Font Awesome,
+            # Octicons etc. as glyphs in the Private Use Area. deckfile.yaml
+            # references them by codepoint (e.g. "" = fa-microphone).
+            nerd-fonts.symbols-only
+            # DejaVu kept as a generic-text fallback if the user wants plain
+            # alphabetic labels.
             dejavu_fonts
           ];
 
-          # Бинарь зовёт hidapi/libudev в runtime — ELF deps уже подхвачены
-          # autoPatchelf через nix-build, но fontconfig для рендеринга
-          # лейблов хорошо иметь в env.
           postInstall = ''
             wrapProgram $out/bin/deckfile \
               --set-default DECKFILE_FONT \
-                "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf"
+                "${pkgs.nerd-fonts.symbols-only}/share/fonts/truetype/NerdFonts/Symbols/SymbolsNerdFont-Regular.ttf"
           '';
 
           meta = with pkgs.lib; {
@@ -118,7 +120,7 @@
             };
             Service = {
               Type = "simple";
-              ExecStart = "${pkg}/bin/deckfile run";
+              ExecStart = "${pkg}/bin/deckfile";
               Restart = "on-failure";
               RestartSec = 10;
               Environment = [ "RUST_LOG=deckfile=info" ];

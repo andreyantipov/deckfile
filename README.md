@@ -2,25 +2,24 @@
 
 Declarative Stream Deck controller. One YAML file (`deckfile.yaml`)
 defines your entire deck — buttons, dials, icons, shell actions, visual
-toggle states. No GUI, no plugins, no terminal multiplexer hacks.
+state indicators. No GUI, no plugins.
 
 Built around [`elgato-streamdeck`](https://crates.io/crates/elgato-streamdeck).
-Stream Deck **Plus** (8 keys + 4 dials + LCD touchscreen) is the primary
-target; other models work too.
+Stream Deck **Plus** (keys + dials + LCD touchscreen) is the primary
+target; other Stream Deck models work too.
 
 ## Install
 
-### Via Nix flake
+### Nix flake
 
 ```nix
-# flake.nix
 {
   inputs.deckfile.url = "github:andreyantipov/deckfile";
 
   outputs = { nixpkgs, deckfile, ... }: {
-    nixosConfigurations.studio = nixpkgs.lib.nixosSystem {
+    nixosConfigurations.<host> = nixpkgs.lib.nixosSystem {
       modules = [
-        deckfile.nixosModules.udev    # TAG=uaccess для 0fd9 (Elgato)
+        deckfile.nixosModules.udev   # uaccess for Elgato 0fd9
         ({ pkgs, ... }: {
           environment.systemPackages = [
             deckfile.packages.x86_64-linux.default
@@ -32,66 +31,101 @@ target; other models work too.
 }
 ```
 
-### Via Cargo
+User-level (home-manager) — autostart via systemd:
+
+```nix
+imports = [ inputs.deckfile.homeManagerModules.default ];
+```
+
+### Cargo
 
 ```sh
 cargo install deckfile
-# + system: hidapi headers, libudev
-# + udev rule: SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
+# also needed on the system:
+# - libudev / libusb (for hidapi)
+# - udev rule:
+#     SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
+#     KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
 ```
 
-## Quick start
-
-1. Write `~/.config/deckfile/deckfile.yaml`:
-
-   ```yaml
-   device:
-     brightness: 60
-     font: /run/current-system/sw/share/fonts/truetype/DejaVuSans-Bold.ttf
-
-   buttons:
-     0:
-       label: "🎤"
-       bg: "#1e4d2b"
-       press: "hermes-voice-toggle"
-       state_file: "/tmp/hermes-voice.pid"
-       label_active: "●"
-       bg_active: "#cc2222"
-
-     1:
-       label: "WEB"
-       press: "xdg-open http://localhost:3000"
-
-   dials:
-     0:
-       turn_up: "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
-       turn_down: "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
-       press: "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
-   ```
-
-2. Run:
-
-   ```sh
-   deckfile run
-   ```
-
-Or as a systemd-user service via the flake's `homeManagerModules.default`.
-
-## CLI
+## Usage
 
 ```
-deckfile run [--config PATH]   start the daemon
-deckfile validate [PATH]       check syntax without touching hardware
-deckfile devices               list connected Stream Decks
+deckfile                run the daemon (default action)
+deckfile -f PATH        run with explicit deckfile.yaml path
+deckfile -d             daemonize (fork + setsid + detach)
+deckfile validate       parse-check deckfile.yaml without hardware
+deckfile devices        list connected Stream Decks
 ```
+
+deckfile.yaml lookup order: `$DECKFILE` → `./deckfile.yaml` →
+`$XDG_CONFIG_HOME/deckfile/deckfile.yaml`.
+
+## deckfile.yaml
+
+```yaml
+device:
+  brightness: 60
+
+vars:
+  shell: zellij                       # ${shell} below expands to "zellij"
+
+buttons:
+  0:
+    label: "▶"
+    bg: "#1e4d2b"
+    on_press: ${shell}
+    # Visual state — daemon polls these paths and swaps variants:
+    state_file: /tmp/some-task.pid    # exists → *_active variant
+    label_active: "■"
+    bg_active: "#cc2222"
+    processing_file: /tmp/some-task.processing  # exists → *_processing
+    label_processing: "…"             # priority: processing > active > idle
+    bg_processing: "#cc8800"
+
+  1:
+    label: "TERM"
+    on_press: foot
+
+dials:
+  0:
+    on_turn_up:   wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+
+    on_turn_down: wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+    on_press:     wpctl set-mute   @DEFAULT_AUDIO_SINK@ toggle
+```
+
+See `deckfile.yaml.example` in the repo for the full schema.
+
+## MCP integration (Claude / other LLM agents)
+
+> **Status: planned for v0.2.** Stub below shows the target shape.
+
+`deckfile mcp` will expose an MCP server so LLM agents can read and
+edit your deckfile.yaml conversationally — "put a microphone icon on
+key 0 and bind it to my voice script". Once shipped, register it with
+Claude Code by adding to `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "deckfile": {
+      "command": "deckfile",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Tools the server will expose: `read_deckfile`, `set_button`, `set_dial`,
+`reload`, `validate`, `list_devices`.
 
 ## Roadmap
 
-- `deckfile mcp` — MCP server so LLM agents can manage your `deckfile.yaml`
-  declaratively (Claude / other agents read schema, propose edits, hot-reload)
-- Custom `Deckfile` DSL syntax (Dockerfile/Justfile-style) — v1.0
-- LCD touchscreen rendering (Plus's 800x100 strip)
-- Multi-page support
+- v0.2 — SVG icon rendering (`icon: lucide-microphone` / `icon: ./mic.svg`)
+- v0.2 — `deckfile mcp` MCP server
+- v0.3 — Multi-page navigation via built-in `@switch_page` action
+- v0.3 — LCD touchscreen rendering (Stream Deck Plus's 800x100 strip)
+- v0.x — Custom DSL syntax (Dockerfile/Justfile-style) as an alternative to YAML
 
 ## License
 
