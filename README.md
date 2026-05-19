@@ -119,14 +119,6 @@ Claude Code by adding to `~/.claude.json`:
 Tools the server will expose: `read_deckfile`, `set_button`, `set_dial`,
 `reload`, `validate`, `list_devices`.
 
-## Roadmap
-
-- v0.2 — SVG icon rendering (`icon: lucide-microphone` / `icon: ./mic.svg`)
-- v0.2 — `deckfile mcp` MCP server
-- v0.3 — Multi-page navigation via built-in `@switch_page` action
-- v0.3 — LCD touchscreen rendering (Stream Deck Plus's 800x100 strip)
-- v0.x — Custom DSL syntax (Dockerfile/Justfile-style) as an alternative to YAML
-
 ## License
 
 MIT
