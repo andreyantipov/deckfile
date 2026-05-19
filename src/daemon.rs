@@ -151,10 +151,14 @@ fn render_all(deck: &StreamDeck, cfg: &Deckfile, page: &Page, r: &Renderer) -> R
     deck.reset()?;
     deck.set_brightness(cfg.device.brightness)?;
     for (idx, btn) in &page.buttons {
-        if btn.label.is_none()
-            && btn.label_active.is_none()
-            && btn.label_processing.is_none()
-        {
+        // Skip only when the button has neither an icon nor a label
+        // configured in any state — those are decorations the user
+        // intentionally left blank.
+        let has_content =
+            btn.icon.is_some() || btn.icon_active.is_some() || btn.icon_processing.is_some()
+            || btn.label.is_some() || btn.label_active.is_some() || btn.label_processing.is_some()
+            || btn.bg.is_some() || btn.bg_active.is_some() || btn.bg_processing.is_some();
+        if !has_content {
             continue;
         }
         let img = r.render(btn, btn.state())?;
