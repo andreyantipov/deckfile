@@ -43,6 +43,7 @@
           nativeBuildInputs = with pkgs; [
             pkg-config
             rust
+            makeWrapper
           ];
           buildInputs = with pkgs; [
             hidapi
@@ -60,7 +61,6 @@
               --set-default DECKFILE_FONT \
                 "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf"
           '';
-          nativeBuildInputs2 = [ pkgs.makeWrapper ];
 
           meta = with pkgs.lib; {
             description = "Declarative Stream Deck controller";
