@@ -369,6 +369,7 @@ dependencies = [
  "hidapi",
  "image",
  "imageproc",
+ "lucide-icons",
  "nix",
  "serde",
  "serde_yaml",
@@ -737,6 +738,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fae87c125b03c1d2c0150c90365d7d6bcc53fb73a9acaef207d2d065860f062"
 dependencies = [
  "imgref",
+]
+
+[[package]]
+name = "lucide-icons"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27a66d4f02ea7db7e9306bb8b2556a99d2eec1e21a8371b134d33927a5d9ebb2"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

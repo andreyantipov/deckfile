@@ -23,7 +23,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 imageproc = "0.25"
 ab_glyph = "0.2"
 
-# Icon rendering (lucide-icons + resvg) lands in v0.2.
+# Lucide icons — built-in icon set. Provides Icon enum + bundled font
+# bytes. `serde` feature lets us deserialize `icon: microphone` from YAML
+# directly into Icon::Microphone.
+lucide-icons = { version = "1.16", features = ["serde"] }
 
 # Logging
 tracing = "0.1"

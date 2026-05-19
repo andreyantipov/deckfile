@@ -34,10 +34,8 @@
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
-            # First build pin'нет Cargo.lock — пока его нет, выставляем
-            # allowBuiltinFetchGit чтобы git-deps elgato-streamdeck (если
-            # будут) подтянулись. После первого `cargo build` коммитим
-            # Cargo.lock и убираем эту опцию.
+            # Allow git deps to be fetched during the initial pin until
+            # Cargo.lock is committed.
             allowBuiltinFetchGit = true;
           };
           nativeBuildInputs = with pkgs; [
@@ -49,19 +47,16 @@
             hidapi
             libusb1
             udev
-            # Symbols Nerd Font — contains Material Design, Font Awesome,
-            # Octicons etc. as glyphs in the Private Use Area. deckfile.yaml
-            # references them by codepoint (e.g. "" = fa-microphone).
-            nerd-fonts.symbols-only
-            # DejaVu kept as a generic-text fallback if the user wants plain
-            # alphabetic labels.
+            # DejaVu provides a fallback path for plain alphabetic labels.
+            # Icons themselves come from the lucide-icons Rust crate
+            # (font bytes embedded in the binary via include_bytes!).
             dejavu_fonts
           ];
 
           postInstall = ''
             wrapProgram $out/bin/deckfile \
               --set-default DECKFILE_FONT \
-                "${pkgs.nerd-fonts.symbols-only}/share/fonts/truetype/NerdFonts/Symbols/SymbolsNerdFont-Regular.ttf"
+                "${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSans-Bold.ttf"
           '';
 
           meta = with pkgs.lib; {
@@ -93,9 +88,8 @@
         };
       }) // {
 
-      # System-level udev — даёт юзеру доступ к Elgato устройствам без
-      # отдельной группы (через uaccess ACL). Подключается параллельно
-      # с packages — это nixosModule, не пакет.
+      # System-level udev rule — grants the active local user access to
+      # Elgato USB devices through uaccess ACL, no extra group required.
       nixosModules.udev = { ... }: {
         services.udev.extraRules = ''
           SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
@@ -103,8 +97,10 @@
         '';
       };
 
-      # User-level home-manager module: пакет + systemd-user-service.
-      # Conf-файл deckfile.yaml юзер пишет руками (или потом MCP-агент).
+      # User-level home-manager module: ships the binary and a
+      # systemd-user-service that runs the daemon at session start.
+      # The deckfile.yaml itself is owned by the user; this module
+      # does not seed it.
       homeManagerModules.default = { config, lib, pkgs, ... }:
         let
           system = pkgs.stdenv.hostPlatform.system;

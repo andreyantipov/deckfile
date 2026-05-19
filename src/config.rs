@@ -9,6 +9,7 @@
 //! Loader normalizes both into a `pages` map (single-page → "main").
 
 use anyhow::{anyhow, Context, Result};
+use lucide_icons::Icon;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ pub struct Deckfile {
     pub buttons: BTreeMap<u8, Button>,
     #[serde(default)]
     pub dials: BTreeMap<u8, Dial>,
-    /// Explicit multi-page form. When set, `buttons`/`dials` at top level
+    /// Explicit multi-page form. When set, top-level `buttons`/`dials`
     /// are ignored.
     #[serde(default)]
     pub pages: BTreeMap<String, Page>,
@@ -34,6 +35,8 @@ pub struct Deckfile {
 pub struct Device {
     #[serde(default = "default_brightness")]
     pub brightness: u8,
+    /// Path to a TTF for fallback text labels. Icons use the embedded
+    /// Lucide font regardless of this setting.
     pub font: Option<PathBuf>,
     #[serde(default = "default_poll_ms")]
     pub poll_ms: u64,
@@ -62,13 +65,18 @@ pub struct Page {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Button {
+    /// Lucide icon name (e.g. `microphone`, `globe`, `settings`).
+    /// Takes precedence over `label` when set.
+    pub icon: Option<Icon>,
+    pub icon_active: Option<Icon>,
+    pub icon_processing: Option<Icon>,
+
+    /// Plain text label, rendered with the fallback font. Used only when
+    /// no icon is set for the current state.
     pub label: Option<String>,
     pub label_active: Option<String>,
     pub label_processing: Option<String>,
-    /// Image file rendered onto the key (alternative to `label`).
-    pub icon: Option<PathBuf>,
-    pub icon_active: Option<PathBuf>,
-    pub icon_processing: Option<PathBuf>,
+
     pub bg: Option<String>,
     pub bg_active: Option<String>,
     pub bg_processing: Option<String>,
@@ -81,18 +89,15 @@ pub struct Button {
     pub on_release: Option<String>,
     pub on_hold: Option<String>,
 
-    /// File whose existence signals "active" state (e.g. voice session pid).
-    /// Renderer picks the *_active variants while present.
+    /// File whose existence signals "active" (e.g. session pid). Renderer
+    /// picks the *_active variants while present.
     pub state_file: Option<PathBuf>,
 
-    /// File whose existence signals "processing" — takes priority over
-    /// state_file, so a transient STT/LLM round-trip overlays the active
-    /// indicator. Renderer picks the *_processing variants while present.
+    /// File whose existence signals "processing" — overrides active so
+    /// a transient STT/LLM round-trip can overlay the listening indicator.
     pub processing_file: Option<PathBuf>,
 }
 
-/// Three-way state of a button, determined by which marker file exists.
-/// Priority: Processing > Active > Idle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ButtonState {
     Idle,
@@ -114,8 +119,7 @@ impl Button {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct Dial {
-    /// Optional label shown on the LCD touchscreen strip above this dial.
-    /// Only visible on Stream Deck Plus.
+    pub icon: Option<Icon>,
     pub label: Option<String>,
     pub on_press: Option<String>,
     pub on_release: Option<String>,
@@ -131,7 +135,7 @@ impl Deckfile {
         let mut cfg: Deckfile = serde_yaml::from_str(&content)
             .with_context(|| format!("parse {}", path.display()))?;
 
-        // Normalize the implicit single-page form into the `pages` map.
+        // Normalize implicit single-page form into the `pages` map.
         if cfg.pages.is_empty() && (!cfg.buttons.is_empty() || !cfg.dials.is_empty()) {
             let page = Page {
                 buttons: std::mem::take(&mut cfg.buttons),
@@ -140,7 +144,6 @@ impl Deckfile {
             cfg.pages.insert("main".into(), page);
         }
 
-        // Apply ${var} substitutions to label/command/path fields.
         cfg.substitute_vars();
 
         tracing::info!(path = %path.display(), pages = cfg.pages.len(), "loaded deckfile.yaml");
@@ -172,8 +175,6 @@ impl Deckfile {
         ))
     }
 
-    /// Replace ${var} occurrences in label/command strings using `self.vars`.
-    /// Unknown vars are left as-is (so users see them in error messages).
     fn substitute_vars(&mut self) {
         if self.vars.is_empty() {
             return;
@@ -188,6 +189,7 @@ impl Deckfile {
             for btn in page.buttons.values_mut() {
                 subst(&mut btn.label);
                 subst(&mut btn.label_active);
+                subst(&mut btn.label_processing);
                 subst(&mut btn.on_press);
                 subst(&mut btn.on_release);
                 subst(&mut btn.on_hold);
@@ -203,8 +205,8 @@ impl Deckfile {
     }
 }
 
-/// Minimal `${name}` interpolator. Unknown names are left untouched to
-/// make typos visible to the user instead of silently expanding to empty.
+/// Minimal `${name}` interpolator. Unknown names are left untouched so
+/// typos remain visible instead of silently expanding to empty.
 fn interp(src: &str, vars: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(src.len());
     let bytes = src.as_bytes();

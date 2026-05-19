@@ -1,18 +1,23 @@
-//! Button image rendering: text/icon centered on the device's LCD key
-//! (96x96 on Plus). The renderer picks the variant based on ButtonState
-//! (Idle / Active / Processing) and falls back through label_active →
-//! label → "" the same way for bg/fg/icon.
+//! Button image rendering. Two fonts in play:
+//!   - LUCIDE_FONT_BYTES (embedded by the lucide-icons crate) renders
+//!     glyphs for the Icon enum (`icon: microphone` in YAML).
+//!   - A regular text font (via $DECKFILE_FONT or `device.font`) renders
+//!     plain alphabetic labels when no icon is set.
+//!
+//! Variant selection follows ButtonState (Processing > Active > Idle)
+//! and falls through for icon/label/bg/fg independently.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{anyhow, Context, Result};
 use image::{Rgb, RgbImage};
 use imageproc::drawing::draw_text_mut;
+use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use std::path::Path;
 
 use crate::config::{Button, ButtonState};
 
 pub struct Renderer {
-    font_data: Vec<u8>,
+    text_font: Vec<u8>,
     size: (u32, u32),
 }
 
@@ -23,44 +28,46 @@ impl Renderer {
             None => std::env::var("DECKFILE_FONT")
                 .map(std::path::PathBuf::from)
                 .map_err(|_| anyhow!(
-                    "no font: set device.font in deckfile.yaml or DECKFILE_FONT env"
+                    "no text font: set device.font in deckfile.yaml or DECKFILE_FONT env"
                 ))?,
         };
-        let font_data = std::fs::read(&path)
+        let text_font = std::fs::read(&path)
             .with_context(|| format!("read font {}", path.display()))?;
-        FontRef::try_from_slice(&font_data).context("font parse")?;
-        Ok(Self { font_data, size })
+        FontRef::try_from_slice(&text_font).context("text font parse")?;
+        // Sanity-check the embedded Lucide font as well — it's a compile-
+        // time constant but worth catching corruption early.
+        FontRef::try_from_slice(LUCIDE_FONT_BYTES).context("lucide font parse")?;
+        Ok(Self { text_font, size })
     }
 
     pub fn render(&self, btn: &Button, state: ButtonState) -> Result<RgbImage> {
-        let label = pick_label(btn, state);
         let bg = parse_color(pick_bg(btn, state))?;
         let fg = parse_color(pick_fg(btn, state))?;
-
         let mut img = RgbImage::from_pixel(self.size.0, self.size.1, bg);
-        let font = FontRef::try_from_slice(&self.font_data)?;
 
-        if !label.is_empty() {
-            let font_size = btn.font_size.unwrap_or(36) as f32;
-            let scale = PxScale::from(font_size);
-            let scaled = font.as_scaled(scale);
-            let mut width = 0.0f32;
-            let mut last_glyph: Option<ab_glyph::GlyphId> = None;
-            for c in label.chars() {
-                let g = font.glyph_id(c);
-                width += scaled.h_advance(g);
-                if let Some(prev) = last_glyph {
-                    width += scaled.kern(prev, g);
-                }
-                last_glyph = Some(g);
+        let font_size = btn.font_size.unwrap_or(48) as f32;
+
+        if let Some(icon) = pick_icon(btn, state) {
+            // Render the Lucide glyph.
+            let font = FontRef::try_from_slice(LUCIDE_FONT_BYTES)?;
+            draw_centered(&mut img, &font, icon.unicode(), font_size, fg, self.size);
+        } else {
+            let label = pick_label(btn, state);
+            if !label.is_empty() {
+                let font = FontRef::try_from_slice(&self.text_font)?;
+                draw_text_centered(&mut img, &font, label, font_size, fg, self.size);
             }
-            let height = scaled.ascent() - scaled.descent();
-            let x = ((self.size.0 as f32 - width) / 2.0).max(0.0) as i32;
-            let y = ((self.size.1 as f32 - height) / 2.0).max(0.0) as i32;
-            draw_text_mut(&mut img, fg, x, y, scale, &font, label);
         }
 
         Ok(img)
+    }
+}
+
+fn pick_icon(btn: &Button, state: ButtonState) -> Option<Icon> {
+    match state {
+        ButtonState::Processing => btn.icon_processing.or(btn.icon_active).or(btn.icon),
+        ButtonState::Active => btn.icon_active.or(btn.icon),
+        ButtonState::Idle => btn.icon,
     }
 }
 
@@ -101,6 +108,41 @@ fn pick_fg(btn: &Button, state: ButtonState) -> &str {
             .unwrap_or("#FFFFFF"),
         ButtonState::Idle => btn.fg.as_deref().unwrap_or("#FFFFFF"),
     }
+}
+
+fn draw_centered<F: Font>(
+    img: &mut RgbImage, font: &F, ch: char, size: f32, color: Rgb<u8>, canvas: (u32, u32),
+) {
+    let scale = PxScale::from(size);
+    let scaled = font.as_scaled(scale);
+    let gid = font.glyph_id(ch);
+    let width = scaled.h_advance(gid);
+    let height = scaled.ascent() - scaled.descent();
+    let x = ((canvas.0 as f32 - width) / 2.0).max(0.0) as i32;
+    let y = ((canvas.1 as f32 - height) / 2.0).max(0.0) as i32;
+    let s = ch.to_string();
+    draw_text_mut(img, color, x, y, scale, font, &s);
+}
+
+fn draw_text_centered<F: Font>(
+    img: &mut RgbImage, font: &F, text: &str, size: f32, color: Rgb<u8>, canvas: (u32, u32),
+) {
+    let scale = PxScale::from(size);
+    let scaled = font.as_scaled(scale);
+    let mut width = 0.0f32;
+    let mut last: Option<ab_glyph::GlyphId> = None;
+    for c in text.chars() {
+        let g = font.glyph_id(c);
+        width += scaled.h_advance(g);
+        if let Some(prev) = last {
+            width += scaled.kern(prev, g);
+        }
+        last = Some(g);
+    }
+    let height = scaled.ascent() - scaled.descent();
+    let x = ((canvas.0 as f32 - width) / 2.0).max(0.0) as i32;
+    let y = ((canvas.1 as f32 - height) / 2.0).max(0.0) as i32;
+    draw_text_mut(img, color, x, y, scale, font, text);
 }
 
 fn parse_color(s: &str) -> Result<Rgb<u8>> {
