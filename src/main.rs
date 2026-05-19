@@ -1,7 +1,7 @@
 //! deckfile — declarative Stream Deck controller.
 //!
 //! Subcommands:
-//!   deckfile run [--config PATH]    run the daemon (reads deckfile.yaml)
+//!   deckfile run [-f PATH] [-d]     run the daemon (reads deckfile.yaml)
 //!   deckfile validate [PATH]        parse-check without touching hardware
 //!   deckfile devices                list connected Stream Deck devices
 //!
@@ -11,7 +11,7 @@ mod config;
 mod daemon;
 mod render;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -26,9 +26,15 @@ struct Cli {
 enum Cmd {
     /// Run the daemon: listen to Stream Deck, dispatch shell commands
     Run {
-        /// Path to deckfile.yaml (default: $DECKFILE → ./deckfile.yaml → $XDG_CONFIG_HOME/deckfile/deckfile.yaml)
-        #[arg(long, short)]
+        /// Path to deckfile.yaml.
+        /// Lookup if omitted: $DECKFILE → ./deckfile.yaml → $XDG_CONFIG_HOME/deckfile/deckfile.yaml
+        #[arg(short = 'f', long = "config")]
         config: Option<PathBuf>,
+
+        /// Daemonize: detach from the terminal (fork + setsid + close stdio).
+        /// Not needed under systemd (`Type=simple`).
+        #[arg(short = 'd', long)]
+        daemonize: bool,
     },
     /// Parse-check the deckfile.yaml without connecting to a device
     Validate {
@@ -48,10 +54,29 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Run { config } => daemon::run(config),
+        Cmd::Run { config, daemonize } => {
+            if daemonize {
+                detach().context("daemonize")?;
+            }
+            daemon::run(config)
+        }
         Cmd::Validate { path } => validate(path),
         Cmd::Devices => devices(),
     }
+}
+
+/// Detach from controlling terminal. Equivalent to `daemon(nochdir=1, noclose=0)`:
+/// fork once → setsid → fork again so we can't reacquire a controlling terminal →
+/// redirect stdio to /dev/null. Logs (tracing) still write to /dev/null after this,
+/// so set RUST_LOG=… and run under a process supervisor for visibility, or use
+/// `systemd --user` instead.
+fn detach() -> Result<()> {
+    // daemon(nochdir=true, noclose=false): fork + setsid + redirect stdio
+    // to /dev/null. Don't chdir to / so the daemon inherits the current
+    // working directory (matters for relative deckfile.yaml paths).
+    nix::unistd::daemon(true, false)
+        .map_err(|e| anyhow::anyhow!("daemon(): {e}"))?;
+    Ok(())
 }
 
 fn validate(path: Option<PathBuf>) -> Result<()> {
