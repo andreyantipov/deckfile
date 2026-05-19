@@ -101,7 +101,14 @@ fn to_updates(input: elgato_streamdeck::StreamDeckInput) -> Vec<DeviceStateUpdat
     PREV.with(|p| {
         let mut prev = p.borrow_mut();
         let events = diff(&prev, &input);
-        *prev = input;
+        // Skip overwriting `prev` when the device just returned NoData
+        // (an idle poll cycle). Without this, holding a key while the
+        // device's HID layer cycles between ButtonStateChange and
+        // NoData would re-fire ButtonDown on every subsequent state
+        // report, producing phantom double-presses ~1-2s apart.
+        if !matches!(input, I::NoData) {
+            *prev = input;
+        }
         events
     })
 }
@@ -119,7 +126,12 @@ fn diff(prev: &elgato_streamdeck::StreamDeckInput, cur: &elgato_streamdeck::Stre
                 }
             }
         }
-        (_, I::ButtonStateChange(cur_b)) => {
+        (I::NoData, I::ButtonStateChange(cur_b)) => {
+            // First real button report after device init (NoData →
+            // ButtonStateChange). Emit Down only for keys that are
+            // currently pressed at this moment — but with the prev-
+            // NoData-skip guard above, we should only hit this branch
+            // ONCE per session, on the very first frame.
             for (i, now) in cur_b.iter().enumerate() {
                 if *now {
                     out.push(DeviceStateUpdate::ButtonDown(i as u8));
