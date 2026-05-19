@@ -1,0 +1,39 @@
+[package]
+name = "deckfile"
+version = "0.1.0"
+edition = "2021"
+description = "Declarative Stream Deck controller — your deckfile.yaml defines the deck"
+license = "MIT"
+repository = "https://github.com/andreyantipov/deckfile"
+
+[dependencies]
+# Stream Deck driver (Plus, XL, MK.2 etc.). Sync API; async behind feature.
+elgato-streamdeck = "0.12"
+hidapi = "2"
+
+# YAML for deckfile.yaml (Dockerfile/Justfile pattern: declarative config file)
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# CLI: deckfile run | validate | devices ...
+clap = { version = "4", features = ["derive"] }
+
+# Render button images (label/icon on the 96x96 LCD)
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = "0.25"
+ab_glyph = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Signal handling (SIGHUP reload, graceful shutdown)
+nix = { version = "0.29", features = ["signal"] }
+
+# Error propagation in main/CLI
+anyhow = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

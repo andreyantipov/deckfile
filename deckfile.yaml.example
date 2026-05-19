@@ -1,0 +1,98 @@
+# deckfile.yaml — declarative Stream Deck configuration.
+#
+# Default lookup: $XDG_CONFIG_HOME/deckfile/deckfile.yaml
+# or ./deckfile.yaml in the working directory.
+# Override with $DECKFILE.
+#
+# ── Schema overview ───────────────────────────────────────────────────
+#
+# device:                # hardware settings
+#   brightness: 0..100
+#   font: <path-to-.ttf> # for label glyphs (icons rendered as text)
+#   poll_ms: 500         # state_file re-render interval
+#
+# vars:                  # string interpolation for commands/URLs/labels
+#   webui: http://localhost:3000
+#   hermes: http://localhost:9119
+#
+# # Single-page form (omit `pages:` and write buttons/dials at top level).
+# # Identical to: pages: { main: { buttons: ..., dials: ... } }
+# buttons:
+#   <idx>:               # 0..7 on Plus (4 top row, 4 bottom row)
+#     label: "🎤"        # text/emoji or single icon-font glyph
+#     icon: <path.png>   # alternative: image file (overrides label)
+#     bg: "#222"
+#     fg: white
+#     font_size: 36
+#
+#     on_press: "shell command — required for activation"
+#     on_release: "shell command (optional)"
+#     on_hold: "shell command (held > 800ms — optional)"
+#
+#     # Visual toggle based on external state. Daemon polls state_file
+#     # and swaps to the *_active variants when the file exists.
+#     state_file: "/tmp/hermes-voice.pid"
+#     label_active: "●"
+#     bg_active: "#cc2222"
+#     fg_active: white
+#     icon_active: <path.png>
+#
+# dials:                 # 0..3 on Plus
+#   <idx>:
+#     label: "🔊"        # shown on the LCD touchscreen above this dial
+#     on_press: "shell command"
+#     on_turn_up: "shell command"
+#     on_turn_down: "shell command"
+#
+# # Multi-page form: switch via the built-in `@switch_page <name>` action.
+# pages:
+#   main:
+#     buttons: ...
+#     dials: ...
+#   settings:
+#     buttons: ...
+#
+# ── Built-in actions (use instead of shell command, with `@` prefix) ──
+#   @switch_page <name>     change to another page
+#   @brightness <0..100>    set device brightness
+#   @reload                 reload deckfile.yaml without restart
+
+
+device:
+  brightness: 60
+
+vars:
+  webui: http://localhost:3000
+  hermes: http://localhost:9119
+
+buttons:
+  # 0 — Hermes voice toggle. Press 1 starts session, press 2 stops.
+  # The voice-toggle script touches /tmp/hermes-voice.pid on start;
+  # the daemon polls it and swaps to the *_active variants below.
+  0:
+    label: "🎤"
+    bg: "#1e4d2b"
+    on_press: hermes-voice-toggle
+    state_file: /tmp/hermes-voice.pid
+    label_active: "●"
+    bg_active: "#cc2222"
+
+  # 1 — Open the chat UI
+  1:
+    label: WEB
+    bg: "#1c2b4d"
+    on_press: xdg-open ${webui}
+
+  # 2 — Open the Hermes dashboard
+  2:
+    label: H
+    bg: "#3d2c4d"
+    on_press: xdg-open ${hermes}
+
+dials:
+  # 0 — speaker volume (left dial)
+  0:
+    label: "🔊"
+    on_press: wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+    on_turn_up: wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+
+    on_turn_down: wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
