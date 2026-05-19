@@ -64,24 +64,52 @@ pub struct Page {
 pub struct Button {
     pub label: Option<String>,
     pub label_active: Option<String>,
+    pub label_processing: Option<String>,
     /// Image file rendered onto the key (alternative to `label`).
     pub icon: Option<PathBuf>,
     pub icon_active: Option<PathBuf>,
+    pub icon_processing: Option<PathBuf>,
     pub bg: Option<String>,
     pub bg_active: Option<String>,
+    pub bg_processing: Option<String>,
     pub fg: Option<String>,
     pub fg_active: Option<String>,
+    pub fg_processing: Option<String>,
     pub font_size: Option<u32>,
 
     pub on_press: Option<String>,
     pub on_release: Option<String>,
-    /// Command fired when the button is held longer than `hold_ms`
-    /// (default 800ms). Hold is detected purely client-side by the daemon.
     pub on_hold: Option<String>,
 
-    /// If this path exists → state=active → renderer picks the *_active
-    /// variants. Polled every `device.poll_ms`.
+    /// File whose existence signals "active" state (e.g. voice session pid).
+    /// Renderer picks the *_active variants while present.
     pub state_file: Option<PathBuf>,
+
+    /// File whose existence signals "processing" — takes priority over
+    /// state_file, so a transient STT/LLM round-trip overlays the active
+    /// indicator. Renderer picks the *_processing variants while present.
+    pub processing_file: Option<PathBuf>,
+}
+
+/// Three-way state of a button, determined by which marker file exists.
+/// Priority: Processing > Active > Idle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ButtonState {
+    Idle,
+    Active,
+    Processing,
+}
+
+impl Button {
+    pub fn state(&self) -> ButtonState {
+        if self.processing_file.as_ref().is_some_and(|p| p.exists()) {
+            ButtonState::Processing
+        } else if self.state_file.as_ref().is_some_and(|p| p.exists()) {
+            ButtonState::Active
+        } else {
+            ButtonState::Idle
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

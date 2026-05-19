@@ -1,8 +1,7 @@
 //! Button image rendering: text/icon centered on the device's LCD key
-//! (96x96 on Plus). Builds an RGB image, draws the background and a
-//! centered glyph via imageproc + ab_glyph TTF. The font path comes
-//! from `device.font` in deckfile.yaml or the $DECKFILE_FONT env var
-//! (set by the Nix flake to a system font by default).
+//! (96x96 on Plus). The renderer picks the variant based on ButtonState
+//! (Idle / Active / Processing) and falls back through label_active →
+//! label → "" the same way for bg/fg/icon.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{anyhow, Context, Result};
@@ -10,7 +9,7 @@ use image::{Rgb, RgbImage};
 use imageproc::drawing::draw_text_mut;
 use std::path::Path;
 
-use crate::config::Button;
+use crate::config::{Button, ButtonState};
 
 pub struct Renderer {
     font_data: Vec<u8>,
@@ -33,22 +32,10 @@ impl Renderer {
         Ok(Self { font_data, size })
     }
 
-    pub fn render(&self, btn: &Button, active: bool) -> Result<RgbImage> {
-        let label = if active {
-            btn.label_active.as_deref().or(btn.label.as_deref()).unwrap_or("")
-        } else {
-            btn.label.as_deref().unwrap_or("")
-        };
-        let bg = parse_color(if active {
-            btn.bg_active.as_deref().or(btn.bg.as_deref())
-        } else {
-            btn.bg.as_deref()
-        }.unwrap_or("#000000"))?;
-        let fg = parse_color(if active {
-            btn.fg_active.as_deref().or(btn.fg.as_deref())
-        } else {
-            btn.fg.as_deref()
-        }.unwrap_or("#FFFFFF"))?;
+    pub fn render(&self, btn: &Button, state: ButtonState) -> Result<RgbImage> {
+        let label = pick_label(btn, state);
+        let bg = parse_color(pick_bg(btn, state))?;
+        let fg = parse_color(pick_fg(btn, state))?;
 
         let mut img = RgbImage::from_pixel(self.size.0, self.size.1, bg);
         let font = FontRef::try_from_slice(&self.font_data)?;
@@ -74,6 +61,45 @@ impl Renderer {
         }
 
         Ok(img)
+    }
+}
+
+fn pick_label(btn: &Button, state: ButtonState) -> &str {
+    match state {
+        ButtonState::Processing => btn.label_processing.as_deref()
+            .or(btn.label_active.as_deref())
+            .or(btn.label.as_deref())
+            .unwrap_or(""),
+        ButtonState::Active => btn.label_active.as_deref()
+            .or(btn.label.as_deref())
+            .unwrap_or(""),
+        ButtonState::Idle => btn.label.as_deref().unwrap_or(""),
+    }
+}
+
+fn pick_bg(btn: &Button, state: ButtonState) -> &str {
+    match state {
+        ButtonState::Processing => btn.bg_processing.as_deref()
+            .or(btn.bg_active.as_deref())
+            .or(btn.bg.as_deref())
+            .unwrap_or("#000000"),
+        ButtonState::Active => btn.bg_active.as_deref()
+            .or(btn.bg.as_deref())
+            .unwrap_or("#000000"),
+        ButtonState::Idle => btn.bg.as_deref().unwrap_or("#000000"),
+    }
+}
+
+fn pick_fg(btn: &Button, state: ButtonState) -> &str {
+    match state {
+        ButtonState::Processing => btn.fg_processing.as_deref()
+            .or(btn.fg_active.as_deref())
+            .or(btn.fg.as_deref())
+            .unwrap_or("#FFFFFF"),
+        ButtonState::Active => btn.fg_active.as_deref()
+            .or(btn.fg.as_deref())
+            .unwrap_or("#FFFFFF"),
+        ButtonState::Idle => btn.fg.as_deref().unwrap_or("#FFFFFF"),
     }
 }
 

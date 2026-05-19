@@ -23,6 +23,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 imageproc = "0.25"
 ab_glyph = "0.2"
 
+# Icon rendering (lucide-icons + resvg) lands in v0.2.
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

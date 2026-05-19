@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::config::{Deckfile, Page};
+use crate::config::{ButtonState, Deckfile, Page};
 use crate::render::Renderer;
 
 pub fn run(config_path: Option<PathBuf>) -> Result<()> {
@@ -23,8 +23,6 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     }
     let cfg = Arc::new(Deckfile::load()?);
 
-    // v0 renders the first page only. The implicit single-page form
-    // normalizes to "main" in the loader.
     let (page_name, page) = cfg.pages.iter().next()
         .ok_or_else(|| anyhow!("deckfile has no pages and no top-level buttons/dials"))?;
     let page = Arc::new(page.clone());
@@ -49,25 +47,26 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
 
     render_all(&deck, &cfg, &page, &renderer)?;
 
-    // Mutex wraps StreamDeck because hidapi's HidDevice isn't Sync.
-    // Threads coordinate through the mutex; contention is negligible
-    // (reader sleeps in hidraw poll, state-poller wakes every poll_ms).
     let deck = Arc::new(Mutex::new(deck));
 
-    // State polling thread: re-render buttons whose state_file existence flips.
+    // State polling. For each button with state_file OR processing_file,
+    // recheck on every device.poll_ms tick and re-render when the resolved
+    // ButtonState (Processing > Active > Idle) changes.
     {
         let cfg = cfg.clone();
         let page = page.clone();
         let renderer = renderer.clone();
         let deck = deck.clone();
         std::thread::spawn(move || {
-            let mut prev: HashMap<u8, bool> = HashMap::new();
+            let mut prev: HashMap<u8, ButtonState> = HashMap::new();
             let interval = Duration::from_millis(cfg.device.poll_ms);
             loop {
                 std::thread::sleep(interval);
                 for (idx, btn) in &page.buttons {
-                    let Some(sf) = &btn.state_file else { continue };
-                    let cur = sf.exists();
+                    if btn.state_file.is_none() && btn.processing_file.is_none() {
+                        continue;
+                    }
+                    let cur = btn.state();
                     if prev.get(idx) != Some(&cur) {
                         prev.insert(*idx, cur);
                         let Ok(img) = renderer.render(btn, cur) else { continue };
@@ -81,16 +80,10 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         });
     }
 
-    // Event-reader loop. read_input blocks until either a real event lands
-    // or the timeout elapses; on each pass we dispatch ButtonDown/Up,
-    // EncoderTwist, etc. to the configured shell commands.
+    // Event-reader loop.
     loop {
         let updates = {
             let d = deck.lock().unwrap();
-            // Use the StreamDeck's own DeviceStateReader via Arc<Mutex> —
-            // but DeviceStateReader needs Arc<StreamDeck>, not Arc<Mutex>.
-            // Simplest: call read_input directly (returns StreamDeckInput,
-            // a snapshot) and track previous state ourselves.
             d.read_input(Some(Duration::from_secs(60)))?
         };
         for ev in to_updates(updates) {
@@ -99,10 +92,6 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     }
 }
 
-/// Convert a single `StreamDeckInput` snapshot into a sequence of
-/// `DeviceStateUpdate` events by diffing against the previous snapshot.
-/// We keep prev state inside a static once-init thread-local since this
-/// fn is called only from the reader thread.
 fn to_updates(input: elgato_streamdeck::StreamDeckInput) -> Vec<DeviceStateUpdate> {
     use elgato_streamdeck::StreamDeckInput as I;
     use std::cell::RefCell;
@@ -131,7 +120,6 @@ fn diff(prev: &elgato_streamdeck::StreamDeckInput, cur: &elgato_streamdeck::Stre
             }
         }
         (_, I::ButtonStateChange(cur_b)) => {
-            // First read after NoData — emit downs for any pressed keys.
             for (i, now) in cur_b.iter().enumerate() {
                 if *now {
                     out.push(DeviceStateUpdate::ButtonDown(i as u8));
@@ -163,11 +151,13 @@ fn render_all(deck: &StreamDeck, cfg: &Deckfile, page: &Page, r: &Renderer) -> R
     deck.reset()?;
     deck.set_brightness(cfg.device.brightness)?;
     for (idx, btn) in &page.buttons {
-        if btn.label.is_none() && btn.label_active.is_none() {
+        if btn.label.is_none()
+            && btn.label_active.is_none()
+            && btn.label_processing.is_none()
+        {
             continue;
         }
-        let active = btn.state_file.as_ref().is_some_and(|p| p.exists());
-        let img = r.render(btn, active)?;
+        let img = r.render(btn, btn.state())?;
         let dyn_img = image::DynamicImage::ImageRgb8(img);
         deck.set_button_image(*idx, dyn_img)?;
     }
