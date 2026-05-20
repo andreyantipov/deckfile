@@ -47,6 +47,13 @@
             hidapi
             libusb1
             udev
+            # Slint's software renderer with `systemfonts` enabled
+            # calls into fontconfig at runtime for glyph lookup; the
+            # `-sys` crate links against the system library at build
+            # time, so we need fontconfig (and freetype, pulled in
+            # transitively but listed for clarity) on the path.
+            fontconfig
+            freetype
             # DejaVu provides a fallback path for plain alphabetic labels.
             # Icons themselves come from the lucide-icons Rust crate
             # (font bytes embedded in the binary via include_bytes!).
@@ -80,6 +87,8 @@
             hidapi
             libusb1
             udev
+            fontconfig
+            freetype
             dejavu_fonts
           ];
           shellHook = ''

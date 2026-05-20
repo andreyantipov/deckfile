@@ -123,6 +123,18 @@ pub struct Button {
     /// File whose existence signals "processing" — overrides active so
     /// a transient STT/LLM round-trip can overlay the listening indicator.
     pub processing_file: Option<PathBuf>,
+
+    /// Path to a `.slint` file driving the visual for this button.
+    /// When set, the icon/label/bg/fg fields are ignored and rendering
+    /// is delegated to the Slint screen — properties `active` and
+    /// `processing` (booleans) are bound to the button's state files,
+    /// and the `tap` callback is invoked on hardware press.
+    pub screen: Option<PathBuf>,
+
+    /// Optional component name inside `screen`. When omitted, the
+    /// first exported component is used. Required only when a `.slint`
+    /// file declares more than one `export component`.
+    pub screen_component: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

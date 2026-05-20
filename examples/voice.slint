@@ -1,0 +1,43 @@
+// Voice-assistant button screen.
+//
+// Three states drive the visuals:
+//   active      — voice session is alive (tinted green, dot enlarges)
+//   processing  — STT/LLM/TTS round-trip in flight (amber, dot shrinks)
+//   neither     — idle (dark gray, dim dot)
+//
+// All transitions cross-fade via `animate { duration }` blocks so the
+// LCD never snaps abruptly. The `tap` callback is wired to a TouchArea
+// so simulator clicks and `invoke("tap")` from the daemon both work.
+
+export component VoiceScreen inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> processing: false;
+    callback tap;
+
+    width: 96px;
+    height: 96px;
+    border-radius: 16px;
+
+    background: root.processing ? #cc8800
+              : root.active ? #1e4d2b
+              : #3d3d3d;
+    animate background { duration: 250ms; easing: ease-in-out; }
+
+    Rectangle {
+        width: root.processing ? 20px
+             : root.active ? 36px
+             : 24px;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: white;
+        opacity: root.active || root.processing ? 1.0 : 0.6;
+        animate width { duration: 220ms; easing: ease-in-out; }
+        animate opacity { duration: 220ms; }
+    }
+
+    TouchArea {
+        clicked => { root.tap(); }
+    }
+}

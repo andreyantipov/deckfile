@@ -56,6 +56,26 @@
 #   @switch_page <name>     change to another page
 #   @brightness <0..100>    set device brightness
 #   @reload                 reload deckfile.yaml without restart
+#
+# ── Slint-driven screens ──────────────────────────────────────────────
+#
+# Instead of icon/label/bg, point a button at a `.slint` file:
+#
+#   2:
+#     screen: ./voice.slint        # required: path to compiled .slint
+#     screen_component: VoiceScreen # optional: when the file exports more
+#                                    # than one component
+#     state_file: /tmp/hermes-voice.pid
+#     processing_file: /tmp/hermes-voice.processing
+#     on_release: hermes-voice-toggle
+#
+# The daemon binds two boolean properties on the component:
+#   - `active`     ← state_file exists
+#   - `processing` ← processing_file exists
+# and routes hardware presses into the `tap` callback. Animations
+# declared with `animate <property> { duration: ...ms; easing: ... }`
+# tick at ~30 FPS while alive. See examples/voice.slint in the
+# deckfile repo for a worked example.
 
 
 device:

@@ -37,6 +37,22 @@ fn voice_button(state_file) {
     }
 }
 
+// --- factory: same button but using a Slint screen --------------------
+//
+// Use this variant when you want native animations (state transitions
+// cross-fade, the dot pulses) instead of the static icon swap.
+// `screen` is resolved relative to the deckfile's directory.
+
+fn voice_button_slint(state_file, slint_path) {
+    #{
+        screen: slint_path,
+        screen_component: "VoiceScreen",
+        on_release: "os-assistant-voice-toggle",
+        state_file: state_file,
+        processing_file: state_file + ".processing",
+    }
+}
+
 // --- factory: a quick "open URL" button -----------------------------
 
 fn url_button(icon, bg, url) {

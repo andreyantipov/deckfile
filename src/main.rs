@@ -10,12 +10,9 @@
 //!
 //! Future: `deckfile mcp` — MCP server letting LLM agents edit deckfile.yaml.
 
-mod config;
-mod daemon;
-mod render;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use deckfile::{config, daemon};
 use std::path::PathBuf;
 
 #[derive(Parser)]

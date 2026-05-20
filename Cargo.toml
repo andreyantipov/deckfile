@@ -40,6 +40,30 @@ nix = { version = "0.29", features = ["signal"] }
 # Error propagation in main/CLI
 anyhow = "1"
 
+# Slint — declarative UI framework. We pair the `slint` runtime (with
+# only the software-renderer backend; no winit/Qt/skia) with `slint-
+# interpreter` so .slint files are loaded dynamically at runtime. The
+# software renderer writes pixels straight into a Vec<u32>, which is
+# exactly what we need for the 96x96 LCDs.
+slint = { version = "1.16", default-features = false, features = [
+    "compat-1-2",
+    "std",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "software-renderer-path",
+] }
+slint-interpreter = { version = "1.16", default-features = false, features = [
+    "compat-1-2",
+    "std",
+    "renderer-software",
+] }
+
+# Async block_on for Compiler::build_from_path (returns a future).
+pollster = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
