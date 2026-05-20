@@ -167,7 +167,8 @@ fn main_loop(
                 if prev_states.get(idx) == Some(&cur) {
                     continue;
                 }
-                prev_states.insert(*idx, cur);
+                let from = prev_states.insert(*idx, cur);
+                tracing::info!(idx, from = ?from, to = ?cur, "state change");
 
                 if let Some(screen) = screens.get(idx) {
                     let _ = screen.set_bool("active", matches!(cur, ButtonState::Active));
