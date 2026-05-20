@@ -1,0 +1,80 @@
+// deckfile.rhai — config-as-code variant of deckfile.yaml.
+//
+// The script's final expression is deserialized into the Deckfile
+// struct, so any shape that deckfile.yaml accepts is valid here too —
+// you just get factory functions, conditionals, env reads, and shell-
+// outs on top of the declarative form.
+//
+// Lookup precedence: deckfile.rhai is preferred over deckfile.yaml
+// when both exist in the same directory.
+//
+// Helpers registered by the engine:
+//   sh(cmd)           — run `sh -c cmd`, return trimmed stdout
+//   env(name)         — env var, "" if unset
+//   env(name, default)— env var with explicit default
+//   file_exists(path) — bool
+//
+// Rhai object literals use `#{}`; map keys can be unquoted identifiers
+// or quoted strings. Numbers like button index must be strings here
+// because deserialization parses them into u8.
+
+// --- factory: a voice-session toggle button --------------------------
+
+fn voice_button(state_file) {
+    #{
+        icon: "message-circle",
+        bg: "#3d3d3d",
+        fg: "white",
+        on_release: "os-assistant-voice-toggle",
+        state_file: state_file,
+        icon_active: "message-circle-more",
+        bg_active: "#1e4d2b",
+        fg_active: "white",
+        processing_file: state_file + ".processing",
+        icon_processing: "message-circle-dashed",
+        bg_processing: "#cc8800",
+        fg_processing: "white",
+    }
+}
+
+// --- factory: a quick "open URL" button -----------------------------
+
+fn url_button(icon, bg, url) {
+    #{
+        icon: icon,
+        bg: bg,
+        fg: "white",
+        on_release: "xdg-open " + url,
+    }
+}
+
+// --- factory: a volume dial -----------------------------------------
+
+fn volume_dial(sink) {
+    #{
+        icon: "volume-2",
+        on_press: "wpctl set-mute " + sink + " toggle",
+        on_turn_up: "wpctl set-volume " + sink + " 5%+",
+        on_turn_down: "wpctl set-volume " + sink + " 5%-",
+    }
+}
+
+// --- the deckfile itself --------------------------------------------
+
+#{
+    device: #{
+        brightness: env("DECKFILE_BRIGHTNESS", "60").parse_int(),
+        font_size: 56,
+        poll_ms: 100,
+    },
+
+    buttons: #{
+        "0": voice_button("/tmp/os-assistant.pid"),
+        "1": url_button("globe",   "#1c2b4d", "http://localhost:3000"),
+        "2": url_button("settings","#3d2c4d", "http://localhost:9119"),
+    },
+
+    dials: #{
+        "0": volume_dial("@DEFAULT_AUDIO_SINK@"),
+    },
+}

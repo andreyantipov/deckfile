@@ -11,9 +11,11 @@ repository = "https://github.com/andreyantipov/deckfile"
 elgato-streamdeck = "0.12"
 hidapi = "2"
 
-# YAML for deckfile.yaml (Dockerfile/Justfile pattern: declarative config file)
+# Config formats. YAML for `deckfile.yaml` (Dockerfile/Justfile pattern),
+# Rhai for `deckfile.rhai` (config-as-code with factory functions, shell-outs).
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+rhai = { version = "1.20", features = ["serde"] }
 
 # CLI: deckfile run | validate | devices ...
 clap = { version = "4", features = ["derive"] }
