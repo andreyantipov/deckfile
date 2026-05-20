@@ -62,6 +62,12 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
 
     let img_fmt = kind.key_image_format();
     let key_size = (img_fmt.size.0 as u32, img_fmt.size.1 as u32);
+    tracing::info!(
+        width = key_size.0,
+        height = key_size.1,
+        mode = ?img_fmt.mode,
+        "key image format",
+    );
     let renderer = Arc::new(Renderer::new(cfg.device.font.as_deref(), key_size)?);
 
     render_static_buttons(&deck, &cfg, &page, &renderer)?;

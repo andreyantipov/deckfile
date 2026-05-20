@@ -4,12 +4,11 @@
 // the .slint itself: when the daemon calls `screen.invoke("tap")` on
 // a hardware ButtonDown, that handler runs and bumps `count`. The
 // background then cycles gray → red → green → blue and the central
-// dot grows by 5px per tap, all with 200ms cross-fades.
+// dot grows by ~4% per tap, all with 220ms cross-fades.
 //
-// Because the tap counter lives entirely in .slint state, there's
-// nothing else to wire up on the Rust side — drop this file into a
-// button via `screen: tap-test.slint` and any visible change on
-// press confirms the pipeline is alive.
+// Sized fully in fractions of `self.width`/`parent.width` so the
+// component fills whatever window the daemon hands it (Plus keys are
+// 120x120, MK.2/XL are 96x96).
 
 export component TapTest inherits Rectangle {
     in-out property <int> count: 0;
@@ -18,9 +17,7 @@ export component TapTest inherits Rectangle {
         root.count = root.count + 1;
     }
 
-    width: 96px;
-    height: 96px;
-    border-radius: 16px;
+    border-radius: self.width / 6;
 
     background:
         mod(root.count, 4) == 0 ? #3d3d3d
@@ -32,7 +29,7 @@ export component TapTest inherits Rectangle {
     Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 28px + mod(root.count, 4) * 4px;
+        width: parent.width * (0.28 + mod(root.count, 4) * 0.04);
         height: self.width;
         border-radius: self.width / 2;
         background: white;
