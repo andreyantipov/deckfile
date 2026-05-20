@@ -182,8 +182,13 @@ fn handle_event(ev: DeviceStateUpdate, page: &Page) {
         DeviceStateUpdate::ButtonUp(idx) => {
             if let Some(btn) = page.buttons.get(&idx) {
                 if let Some(cmd) = &btn.on_release {
+                    tracing::info!(idx, %cmd, "btn release");
                     spawn_shell(cmd);
+                } else {
+                    tracing::debug!(idx, "btn release (no binding)");
                 }
+            } else {
+                tracing::debug!(idx, "btn release (no config)");
             }
         }
         DeviceStateUpdate::EncoderDown(idx) => {
