@@ -1,52 +1,62 @@
-//! Main daemon loop. hidapi is fundamentally synchronous and not Sync,
-//! so we use plain `std::thread` rather than tokio: one thread reads input
-//! from the device, another polls state_files; a third (when any button
-//! has a `.slint` screen) drives Slint rendering. The main thread renders
-//! the initial static layout and then enters the event-reader loop.
+//! Single-threaded daemon loop.
 //!
-//! Multi-page navigation (`@switch_page`) is a follow-up; v0 only renders
-//! the first page in the deckfile (or the implicit "main" page).
+//! Everything that touches the device — input reads, button rendering,
+//! the Slint screens, state-file polling — happens on one thread. The
+//! original v0 sharded these across an input thread, a state-poll
+//! thread, and a Slint UI thread, all serialised through an
+//! `Arc<Mutex<StreamDeck>>`. That sounded clean but in practice the
+//! input thread held the mutex inside `read_input` for up to its
+//! timeout (we had it set to 60 seconds), so the Slint thread could
+//! only acquire the lock during the microsecond gap between input
+//! iterations and almost never managed to push an updated frame —
+//! a tap visibly registered only after five-or-so presses.
+//!
+//! The cure is to stop sharing the device at all. One tick of the
+//! main loop now does, in order:
+//!
+//!   1. poll device input with a short timeout (10ms) and dispatch
+//!      ButtonDown / ButtonUp / EncoderTwist events
+//!   2. re-check state files every `device.poll_ms`, push the
+//!      truth values into the corresponding Slint properties
+//!   3. tick Slint animations
+//!   4. render any dirty Slint screens, blit them to the deck
+//!   5. flush, sleep until the next frame
+//!
+//! Slint and the StreamDeck handle both live on this thread — no
+//! `Send` requirement, no mutex, no contention.
 
 use anyhow::{anyhow, Context, Result};
 use elgato_streamdeck::{new_hidapi, DeviceStateUpdate, StreamDeck};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{Button, ButtonState, Deckfile, Page};
 use crate::render::Renderer;
 use crate::slint_screen::{tick_animations, SlintScreen};
 
-/// Cross-thread message into the Slint UI thread. The thread owns
-/// all SlintScreen instances (they're `!Send`) so every state change
-/// or hardware event must funnel through this channel.
-enum SlintCmd {
-    /// Hardware button press — fires the component's `tap` callback.
-    Tap(u8),
-    /// State-file change — sets the `active` and `processing` boolean
-    /// properties on the screen for the given button index.
-    SetState {
-        idx: u8,
-        active: bool,
-        processing: bool,
-    },
-}
+/// USB input poll window. Short enough that we wake quickly when a
+/// key is pressed but long enough that we don't burn CPU spinning.
+/// Picked so the loop wakes ~100 times per second.
+const INPUT_POLL: Duration = Duration::from_millis(10);
+
+/// Target frame interval for Slint redraws. 30 FPS is plenty for the
+/// 96/120px LCDs and keeps CPU use negligible.
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 pub fn run(config_path: Option<PathBuf>) -> Result<()> {
     if let Some(p) = config_path {
         std::env::set_var("DECKFILE", p);
     }
-    let cfg = Arc::new(Deckfile::load()?);
+    let cfg = Deckfile::load()?;
 
     let (page_name, page) = cfg
         .pages
         .iter()
         .next()
         .ok_or_else(|| anyhow!("deckfile has no pages and no top-level buttons/dials"))?;
-    let page = Arc::new(page.clone());
+    let page = page.clone();
     tracing::info!(page = %page_name, "active page");
 
     let hid = new_hidapi().context("hidapi init")?;
@@ -68,248 +78,137 @@ pub fn run(config_path: Option<PathBuf>) -> Result<()> {
         mode = ?img_fmt.mode,
         "key image format",
     );
-    let renderer = Arc::new(Renderer::new(cfg.device.font.as_deref(), key_size)?);
 
-    render_static_buttons(&deck, &cfg, &page, &renderer)?;
+    let renderer = Renderer::new(cfg.device.font.as_deref(), key_size)?;
 
-    let deck = Arc::new(Mutex::new(deck));
-
-    // If any button has `screen:`, spin up the Slint thread and keep
-    // a sender we can hand to the state-poll and input loops.
-    let slint_tx: Option<Sender<SlintCmd>> = spawn_slint_thread_if_needed(
-        page.clone(),
-        deck.clone(),
-        key_size,
-    )?;
-
-    // State-polling thread. Slint-backed buttons forward their state
-    // changes to the UI thread via the channel; static buttons paint
-    // directly through `Renderer`.
-    spawn_state_poll_thread(
-        cfg.clone(),
-        page.clone(),
-        deck.clone(),
-        renderer,
-        slint_tx.clone(),
-    );
-
-    // Event-reader loop. Runs on the main thread and dispatches every
-    // device update through `handle_event`.
-    loop {
-        let updates = {
-            let d = deck.lock().unwrap();
-            d.read_input(Some(Duration::from_secs(60)))?
-        };
-        for ev in to_updates(updates) {
-            handle_event(&ev, &page, slint_tx.as_ref());
-        }
-    }
-}
-
-fn spawn_state_poll_thread(
-    cfg: Arc<Deckfile>,
-    page: Arc<Page>,
-    deck: Arc<Mutex<StreamDeck>>,
-    renderer: Arc<Renderer>,
-    slint_tx: Option<Sender<SlintCmd>>,
-) {
-    std::thread::Builder::new()
-        .name("deckfile-state-poll".into())
-        .spawn(move || {
-            let mut prev: HashMap<u8, ButtonState> = HashMap::new();
-            let interval = Duration::from_millis(cfg.device.poll_ms);
-            loop {
-                std::thread::sleep(interval);
-                for (idx, btn) in &page.buttons {
-                    if btn.state_file.is_none() && btn.processing_file.is_none() {
-                        continue;
-                    }
-                    let cur = btn.state();
-                    if prev.get(idx) == Some(&cur) {
-                        continue;
-                    }
-                    prev.insert(*idx, cur);
-
-                    if btn.screen.is_some() {
-                        if let Some(tx) = &slint_tx {
-                            let _ = tx.send(SlintCmd::SetState {
-                                idx: *idx,
-                                active: matches!(cur, ButtonState::Active),
-                                processing: matches!(cur, ButtonState::Processing),
-                            });
-                        }
-                    } else if let Ok(img) = renderer.render(btn, cur) {
-                        let dyn_img = image::DynamicImage::ImageRgb8(img);
-                        let d = deck.lock().unwrap();
-                        let _ = d.set_button_image(*idx, dyn_img);
-                        let _ = d.flush();
-                    }
-                }
-            }
-        })
-        .expect("spawn state-poll thread");
-}
-
-/// If any button has a `screen:` field, spin up the Slint UI thread
-/// and return its command sender. Returning `None` means no Slint
-/// work is happening and callers should not bother building messages.
-fn spawn_slint_thread_if_needed(
-    page: Arc<Page>,
-    deck: Arc<Mutex<StreamDeck>>,
-    key_size: (u32, u32),
-) -> Result<Option<Sender<SlintCmd>>> {
-    // Collect (idx, path, component, initial_state) snapshots so the
-    // spawned thread can build screens without re-locking the page.
-    let mut specs: Vec<SlintSpec> = Vec::new();
+    // Pre-build the Slint screens. They're !Send so they live forever
+    // on this thread. Initial state is whatever the state-files report
+    // right now (so first frame matches reality, not the .slint default).
+    let mut screens: HashMap<u8, SlintScreen> = HashMap::new();
     for (idx, btn) in &page.buttons {
         let Some(path) = &btn.screen else { continue };
-        specs.push(SlintSpec {
-            idx: *idx,
-            path: path.clone(),
-            component: btn.screen_component.clone(),
-            initial_state: btn.state(),
-        });
-    }
-    if specs.is_empty() {
-        return Ok(None);
-    }
-
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("deckfile-slint-ui".into())
-        .spawn(move || {
-            if let Err(e) = run_slint_loop(rx, specs, deck, key_size) {
-                tracing::error!(error = %e, "slint UI thread terminated");
-            }
-        })
-        .context("spawn slint UI thread")?;
-    Ok(Some(tx))
-}
-
-struct SlintSpec {
-    idx: u8,
-    path: PathBuf,
-    component: Option<String>,
-    initial_state: ButtonState,
-}
-
-fn run_slint_loop(
-    rx: mpsc::Receiver<SlintCmd>,
-    specs: Vec<SlintSpec>,
-    deck: Arc<Mutex<StreamDeck>>,
-    key_size: (u32, u32),
-) -> Result<()> {
-    let mut screens: HashMap<u8, SlintScreen> = HashMap::new();
-    for spec in specs {
         let screen = SlintScreen::load_path(
-            &spec.path,
-            spec.component.as_deref(),
+            path,
+            btn.screen_component.as_deref(),
             key_size.0,
             key_size.1,
         )
         .with_context(|| {
-            format!(
-                "load slint screen for button {} ({})",
-                spec.idx,
-                spec.path.display()
-            )
+            format!("load slint screen for button {} ({})", idx, path.display())
         })?;
-        // Apply initial state so the first frame matches the live
-        // state-file situation rather than the .slint file defaults.
-        let _ = screen.set_bool("active", matches!(spec.initial_state, ButtonState::Active));
+        let state = btn.state();
+        let _ = screen.set_bool("active", matches!(state, ButtonState::Active));
         let _ = screen.set_bool(
             "processing",
-            matches!(spec.initial_state, ButtonState::Processing),
+            matches!(state, ButtonState::Processing),
         );
-        tracing::info!(idx = spec.idx, path = %spec.path.display(), "slint screen loaded");
-        screens.insert(spec.idx, screen);
+        tracing::info!(idx, path = %path.display(), "slint screen loaded");
+        screens.insert(*idx, screen);
     }
 
-    // First frame for every Slint button.
-    push_renders(&deck, &screens, screens.keys().copied().collect());
+    // Paint the initial layout — static buttons through `Renderer`,
+    // Slint buttons via their first snapshot.
+    render_static_buttons(&deck, &cfg, &page, &renderer)?;
+    for (idx, screen) in &screens {
+        if let Ok(img) = screen.render() {
+            let _ = deck.set_button_image(*idx, image::DynamicImage::ImageRgb8(img));
+        }
+    }
+    deck.flush().ok();
 
-    let frame = Duration::from_millis(33);
+    main_loop(deck, page, cfg, renderer, screens)
+}
+
+fn main_loop(
+    deck: StreamDeck,
+    page: Page,
+    cfg: Deckfile,
+    renderer: Renderer,
+    mut screens: HashMap<u8, SlintScreen>,
+) -> Result<()> {
+    let mut prev_input = elgato_streamdeck::StreamDeckInput::NoData;
+    let mut prev_states: HashMap<u8, ButtonState> = HashMap::new();
+    let state_poll = Duration::from_millis(cfg.device.poll_ms);
+    let mut last_state_check = Instant::now() - state_poll;
+    let mut dirty: HashSet<u8> = HashSet::new();
+
     loop {
-        // Drain pending commands without blocking — the channel is a
-        // hint, not a tick source. Each command flags its button dirty
-        // so the next render pass picks it up alongside any animations.
-        let mut dirty: HashSet<u8> = HashSet::new();
-        while let Ok(cmd) = rx.try_recv() {
-            match cmd {
-                SlintCmd::Tap(idx) => {
-                    if let Some(s) = screens.get(&idx) {
-                        let _ = s.invoke("tap");
-                    }
-                    dirty.insert(idx);
+        let frame_start = Instant::now();
+
+        // 1. Input.
+        match deck.read_input(Some(INPUT_POLL)) {
+            Ok(input) => {
+                for ev in diff(&prev_input, &input) {
+                    handle_event(&ev, &page, &mut screens, &mut dirty);
                 }
-                SlintCmd::SetState {
-                    idx,
-                    active,
-                    processing,
-                } => {
-                    if let Some(s) = screens.get(&idx) {
-                        let _ = s.set_bool("active", active);
-                        let _ = s.set_bool("processing", processing);
-                    }
-                    dirty.insert(idx);
+                prev_input = input;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "read_input failed");
+            }
+        }
+
+        // 2. State files. Slint buttons → property updates; static
+        //    buttons → render now (rare, doesn't share the frame budget).
+        if last_state_check.elapsed() >= state_poll {
+            last_state_check = Instant::now();
+            for (idx, btn) in &page.buttons {
+                if btn.state_file.is_none() && btn.processing_file.is_none() {
+                    continue;
+                }
+                let cur = btn.state();
+                if prev_states.get(idx) == Some(&cur) {
+                    continue;
+                }
+                prev_states.insert(*idx, cur);
+
+                if let Some(screen) = screens.get(idx) {
+                    let _ = screen.set_bool("active", matches!(cur, ButtonState::Active));
+                    let _ = screen.set_bool(
+                        "processing",
+                        matches!(cur, ButtonState::Processing),
+                    );
+                    dirty.insert(*idx);
+                } else if let Ok(img) = renderer.render(btn, cur) {
+                    let _ = deck.set_button_image(*idx, image::DynamicImage::ImageRgb8(img));
                 }
             }
         }
 
+        // 3. Tick Slint animations and pick up any in-progress ones.
         tick_animations();
-
-        for (idx, s) in &screens {
-            if s.has_active_animations() {
+        for (idx, screen) in &screens {
+            if screen.has_active_animations() {
                 dirty.insert(*idx);
             }
         }
 
+        // 4. Render every dirty Slint screen and blit.
         if !dirty.is_empty() {
-            push_renders(&deck, &screens, dirty);
+            let drained: Vec<u8> = dirty.drain().collect();
+            for idx in &drained {
+                let Some(screen) = screens.get(idx) else { continue };
+                match screen.render() {
+                    Ok(img) => {
+                        if let Err(e) = deck
+                            .set_button_image(*idx, image::DynamicImage::ImageRgb8(img))
+                        {
+                            tracing::warn!(idx, error = %e, "set_button_image failed");
+                        }
+                    }
+                    Err(e) => tracing::warn!(idx, error = %e, "slint render failed"),
+                }
+            }
+            deck.flush().ok();
         }
 
-        std::thread::sleep(frame);
-    }
-}
-
-fn push_renders(
-    deck: &Arc<Mutex<StreamDeck>>,
-    screens: &HashMap<u8, SlintScreen>,
-    indices: HashSet<u8>,
-) {
-    let mut imgs: Vec<(u8, image::RgbImage)> = Vec::with_capacity(indices.len());
-    for idx in indices {
-        let Some(screen) = screens.get(&idx) else { continue };
-        match screen.render() {
-            Ok(img) => imgs.push((idx, img)),
-            Err(e) => tracing::warn!(idx, error = %e, "slint render failed"),
+        // 5. Pace the loop. The input poll already costs INPUT_POLL,
+        //    so we only need to top up to FRAME_INTERVAL.
+        let elapsed = frame_start.elapsed();
+        if elapsed < FRAME_INTERVAL {
+            std::thread::sleep(FRAME_INTERVAL - elapsed);
         }
     }
-    if imgs.is_empty() {
-        return;
-    }
-    let d = deck.lock().unwrap();
-    for (idx, img) in imgs {
-        let dyn_img = image::DynamicImage::ImageRgb8(img);
-        if let Err(e) = d.set_button_image(idx, dyn_img) {
-            tracing::warn!(idx, error = %e, "set_button_image failed");
-        }
-    }
-    let _ = d.flush();
-}
-
-fn to_updates(input: elgato_streamdeck::StreamDeckInput) -> Vec<DeviceStateUpdate> {
-    use elgato_streamdeck::StreamDeckInput as I;
-    use std::cell::RefCell;
-    thread_local! {
-        static PREV: RefCell<I> = const { RefCell::new(I::NoData) };
-    }
-    PREV.with(|p| {
-        let mut prev = p.borrow_mut();
-        let events = diff(&prev, &input);
-        *prev = input;
-        events
-    })
 }
 
 fn diff(
@@ -392,7 +291,12 @@ fn has_static_content(btn: &Button) -> bool {
         || btn.bg_processing.is_some()
 }
 
-fn handle_event(ev: &DeviceStateUpdate, page: &Page, slint_tx: Option<&Sender<SlintCmd>>) {
+fn handle_event(
+    ev: &DeviceStateUpdate,
+    page: &Page,
+    screens: &mut HashMap<u8, SlintScreen>,
+    dirty: &mut HashSet<u8>,
+) {
     match ev {
         DeviceStateUpdate::ButtonDown(idx) => {
             if let Some(btn) = page.buttons.get(idx) {
@@ -400,10 +304,9 @@ fn handle_event(ev: &DeviceStateUpdate, page: &Page, slint_tx: Option<&Sender<Sl
                     tracing::info!(idx, %cmd, "btn press");
                     spawn_shell(cmd);
                 }
-                if btn.screen.is_some() {
-                    if let Some(tx) = slint_tx {
-                        let _ = tx.send(SlintCmd::Tap(*idx));
-                    }
+                if let Some(screen) = screens.get(idx) {
+                    let _ = screen.invoke("tap");
+                    dirty.insert(*idx);
                 }
             }
         }
@@ -412,11 +315,7 @@ fn handle_event(ev: &DeviceStateUpdate, page: &Page, slint_tx: Option<&Sender<Sl
                 if let Some(cmd) = &btn.on_release {
                     tracing::info!(idx, %cmd, "btn release");
                     spawn_shell(cmd);
-                } else {
-                    tracing::debug!(idx, "btn release (no binding)");
                 }
-            } else {
-                tracing::debug!(idx, "btn release (no config)");
             }
         }
         DeviceStateUpdate::EncoderDown(idx) => {
