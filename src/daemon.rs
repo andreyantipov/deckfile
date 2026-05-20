@@ -126,7 +126,14 @@ fn main_loop(
     renderer: Renderer,
     mut screens: HashMap<u8, SlintScreen>,
 ) -> Result<()> {
-    let mut prev_input = elgato_streamdeck::StreamDeckInput::NoData;
+    // Track button and encoder pressed states *separately* and *only*
+    // update when we actually receive that kind of report. Using the
+    // whole `StreamDeckInput` enum as prev (the old approach) lost
+    // ButtonUp edges whenever a `NoData` poll fell between the press
+    // and release — prev got rewritten to `NoData` and the next
+    // ButtonStateChange([false, ...]) compared against nothing.
+    let mut prev_buttons: Option<Vec<bool>> = None;
+    let mut prev_encoders: Option<Vec<bool>> = None;
     let mut prev_states: HashMap<u8, ButtonState> = HashMap::new();
     let state_poll = Duration::from_millis(cfg.device.poll_ms);
     let mut last_state_check = Instant::now() - state_poll;
@@ -135,13 +142,13 @@ fn main_loop(
     loop {
         let frame_start = Instant::now();
 
-        // 1. Input.
+        // 1. Input — only mutate prev_* state when the read returns the
+        //    matching kind. NoData is treated as "nothing to do".
         match deck.read_input(Some(INPUT_POLL)) {
             Ok(input) => {
-                for ev in diff(&prev_input, &input) {
+                for ev in diff_input(&input, &mut prev_buttons, &mut prev_encoders) {
                     handle_event(&ev, &page, &mut screens, &mut dirty);
                 }
-                prev_input = input;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "read_input failed");
@@ -211,45 +218,71 @@ fn main_loop(
     }
 }
 
-fn diff(
-    prev: &elgato_streamdeck::StreamDeckInput,
-    cur: &elgato_streamdeck::StreamDeckInput,
+/// Translate a single `read_input` result into edge events,
+/// mutating `prev_buttons` / `prev_encoders` only when the report
+/// concerns that kind of input. Returning the events as a Vec keeps
+/// the call site loop-free.
+fn diff_input(
+    input: &elgato_streamdeck::StreamDeckInput,
+    prev_buttons: &mut Option<Vec<bool>>,
+    prev_encoders: &mut Option<Vec<bool>>,
 ) -> Vec<DeviceStateUpdate> {
     use elgato_streamdeck::StreamDeckInput as I;
     let mut out = Vec::new();
-    match (prev, cur) {
-        (I::ButtonStateChange(prev_b), I::ButtonStateChange(cur_b)) => {
-            for (i, (was, now)) in prev_b.iter().zip(cur_b.iter()).enumerate() {
-                if !was && *now {
-                    out.push(DeviceStateUpdate::ButtonDown(i as u8));
-                } else if *was && !now {
-                    out.push(DeviceStateUpdate::ButtonUp(i as u8));
+    match input {
+        I::ButtonStateChange(cur) => {
+            match prev_buttons {
+                Some(prev) => {
+                    for (i, (was, now)) in prev.iter().zip(cur.iter()).enumerate() {
+                        if !was && *now {
+                            out.push(DeviceStateUpdate::ButtonDown(i as u8));
+                        } else if *was && !now {
+                            out.push(DeviceStateUpdate::ButtonUp(i as u8));
+                        }
+                    }
+                }
+                None => {
+                    // First button report after boot. Synthesise downs
+                    // for anything already pressed so a held-at-boot key
+                    // still gets its release fired later.
+                    for (i, now) in cur.iter().enumerate() {
+                        if *now {
+                            out.push(DeviceStateUpdate::ButtonDown(i as u8));
+                        }
+                    }
                 }
             }
+            *prev_buttons = Some(cur.clone());
         }
-        (_, I::ButtonStateChange(cur_b)) => {
-            for (i, now) in cur_b.iter().enumerate() {
-                if *now {
-                    out.push(DeviceStateUpdate::ButtonDown(i as u8));
+        I::EncoderStateChange(cur) => {
+            match prev_encoders {
+                Some(prev) => {
+                    for (i, (was, now)) in prev.iter().zip(cur.iter()).enumerate() {
+                        if !was && *now {
+                            out.push(DeviceStateUpdate::EncoderDown(i as u8));
+                        } else if *was && !now {
+                            out.push(DeviceStateUpdate::EncoderUp(i as u8));
+                        }
+                    }
+                }
+                None => {
+                    for (i, now) in cur.iter().enumerate() {
+                        if *now {
+                            out.push(DeviceStateUpdate::EncoderDown(i as u8));
+                        }
+                    }
                 }
             }
+            *prev_encoders = Some(cur.clone());
         }
-        (I::EncoderStateChange(prev_e), I::EncoderStateChange(cur_e)) => {
-            for (i, (was, now)) in prev_e.iter().zip(cur_e.iter()).enumerate() {
-                if !was && *now {
-                    out.push(DeviceStateUpdate::EncoderDown(i as u8));
-                } else if *was && !now {
-                    out.push(DeviceStateUpdate::EncoderUp(i as u8));
-                }
-            }
-        }
-        (_, I::EncoderTwist(deltas)) => {
+        I::EncoderTwist(deltas) => {
             for (i, d) in deltas.iter().enumerate() {
                 if *d != 0 {
                     out.push(DeviceStateUpdate::EncoderTwist(i as u8, *d));
                 }
             }
         }
+        // NoData / TouchScreenPress / etc. — don't touch prev state.
         _ => {}
     }
     out
