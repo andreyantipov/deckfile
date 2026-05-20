@@ -1,0 +1,42 @@
+// Diagnostic screen — proves that the daemon→Slint event path works.
+//
+// The `tap` callback is declared and bound to a default handler in
+// the .slint itself: when the daemon calls `screen.invoke("tap")` on
+// a hardware ButtonDown, that handler runs and bumps `count`. The
+// background then cycles gray → red → green → blue and the central
+// dot grows by 5px per tap, all with 200ms cross-fades.
+//
+// Because the tap counter lives entirely in .slint state, there's
+// nothing else to wire up on the Rust side — drop this file into a
+// button via `screen: tap-test.slint` and any visible change on
+// press confirms the pipeline is alive.
+
+export component TapTest inherits Rectangle {
+    in-out property <int> count: 0;
+    callback tap;
+    tap => {
+        root.count = root.count + 1;
+    }
+
+    width: 96px;
+    height: 96px;
+    border-radius: 16px;
+
+    background:
+        mod(root.count, 4) == 0 ? #3d3d3d
+        : mod(root.count, 4) == 1 ? #cc4444
+        : mod(root.count, 4) == 2 ? #44cc44
+        : #4466cc;
+    animate background { duration: 220ms; easing: ease-in-out; }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 28px + mod(root.count, 4) * 4px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: white;
+        opacity: 0.9;
+        animate width { duration: 220ms; easing: ease-in-out; }
+    }
+}

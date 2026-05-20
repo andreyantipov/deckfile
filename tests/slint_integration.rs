@@ -131,6 +131,29 @@ fn callback_invoke_runs_registered_handler() {
 }
 
 #[test]
+fn tap_test_example_compiles_and_responds_to_invoke() {
+    // Diagnostic harness for the daemon's invoke("tap") pipeline.
+    // The .slint declares a default handler for `tap` that bumps the
+    // `count` property; invoking the callback from Rust should shift
+    // the background color, which we sample at the safe corner pixel.
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("tap-test.slint");
+    let screen = SlintScreen::load_path(&path, Some("TapTest"), SIZE, SIZE)
+        .expect("tap-test.slint should compile");
+    let idle = center_pixel_excluding_white(&screen.render().unwrap());
+
+    screen.invoke("tap").unwrap();
+    for _ in 0..30 {
+        tick_animations();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let tapped = center_pixel_excluding_white(&screen.render().unwrap());
+
+    assert_ne!(idle, tapped, "tap should change visuals: {idle:?} vs {tapped:?}");
+}
+
+#[test]
 fn voice_example_loads_from_disk() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
