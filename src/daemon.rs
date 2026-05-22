@@ -175,7 +175,8 @@ fn main_loop(
                 let prev = prev_levels.get(idx).copied().unwrap_or(-1.0);
                 // Only push if the value changed enough to be worth a
                 // re-render — avoids a flood of frames during silence.
-                if (cur - prev).abs() > 0.02 {
+                // 0.01 = ~1% of the ring; smaller deltas aren't visible.
+                if (cur - prev).abs() > 0.01 {
                     prev_levels.insert(*idx, cur);
                     let _ = screen.set_number("level", cur as f64);
                     dirty.insert(*idx);
