@@ -124,6 +124,11 @@ pub struct Button {
     /// a transient STT/LLM round-trip can overlay the listening indicator.
     pub processing_file: Option<PathBuf>,
 
+    /// File whose contents (single ascii float, 0..1) drive a `level`
+    /// property on the Slint screen — used for VU-style live audio
+    /// meters where the visual should pulse with mic input.
+    pub level_file: Option<PathBuf>,
+
     /// Path to a `.slint` file driving the visual for this button.
     /// When set, the icon/label/bg/fg fields are ignored and rendering
     /// is delegated to the Slint screen — properties `active` and

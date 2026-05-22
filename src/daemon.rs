@@ -135,6 +135,7 @@ fn main_loop(
     let mut prev_buttons: Option<Vec<bool>> = None;
     let mut prev_encoders: Option<Vec<bool>> = None;
     let mut prev_states: HashMap<u8, ButtonState> = HashMap::new();
+    let mut prev_levels: HashMap<u8, f32> = HashMap::new();
     let state_poll = Duration::from_millis(cfg.device.poll_ms);
     let mut last_state_check = Instant::now() - state_poll;
     let mut dirty: HashSet<u8> = HashSet::new();
@@ -159,6 +160,28 @@ fn main_loop(
         //    buttons → render now (rare, doesn't share the frame budget).
         if last_state_check.elapsed() >= state_poll {
             last_state_check = Instant::now();
+
+            // Level files — read the live VU value and push to the
+            // `level` slint property. Treated separately from the
+            // state-machine props because level changes ~10 Hz with
+            // small deltas, where state changes are sparse.
+            for (idx, btn) in &page.buttons {
+                let Some(path) = &btn.level_file else { continue };
+                let Some(screen) = screens.get(idx) else { continue };
+                let cur = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let prev = prev_levels.get(idx).copied().unwrap_or(-1.0);
+                // Only push if the value changed enough to be worth a
+                // re-render — avoids a flood of frames during silence.
+                if (cur - prev).abs() > 0.02 {
+                    prev_levels.insert(*idx, cur);
+                    let _ = screen.set_number("level", cur as f64);
+                    dirty.insert(*idx);
+                }
+            }
+
             for (idx, btn) in &page.buttons {
                 if btn.state_file.is_none() && btn.processing_file.is_none() {
                     continue;

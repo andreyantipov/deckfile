@@ -1,22 +1,19 @@
 // Voice-assistant button screen.
 //
-// Three states drive the visuals:
+// Three states + a live mic VU ring:
 //   active      — voice session is alive (tinted green, dot enlarges)
 //   processing  — STT/LLM/TTS round-trip in flight (amber, dot shrinks)
 //   neither     — idle (dark gray, dim dot)
 //
-// All transitions cross-fade via `animate { duration }` blocks so the
-// LCD never snaps abruptly. The `tap` callback is wired to a TouchArea
-// so simulator clicks and `invoke("tap")` from the daemon both work.
-//
-// Everything is sized as a fraction of the parent so the component
-// adapts to whatever the device's actual key image format is (Plus
-// keys are 120x120, XL/MK.2 are 96x96 — `width: 96px` would render
-// inside a 120x120 window and look upscaled/blocky).
+//   level       — current mic RMS (0..1), drives a pulsing ring around
+//                 the dot so the user can SEE that their voice is being
+//                 captured in real time. Pushed by the daemon every
+//                 ~100ms from /tmp/os-assistant.level.
 
 export component VoiceScreen inherits Rectangle {
     in property <bool> active: false;
     in property <bool> processing: false;
+    in property <float> level: 0.0;
     callback tap;
 
     border-radius: self.width / 6;
@@ -26,11 +23,29 @@ export component VoiceScreen inherits Rectangle {
               : #3d3d3d;
     animate background { duration: 250ms; easing: ease-in-out; }
 
+    // VU ring — visible only when active (a session is open and we're
+    // listening). Diameter scales 32% → 92% with `level`. Opacity
+    // also rises with level so silence ≈ invisible.
     Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        // Dot grows from 25% of width when idle, to 38% when active,
-        // back down to 21% during a processing round-trip.
+        width: parent.width * (0.32 + root.level * 0.60);
+        height: self.width;
+        border-radius: self.width / 2;
+        background: transparent;
+        border-width: 2px;
+        border-color: white;
+        opacity: root.active && !root.processing
+                 ? 0.15 + root.level * 0.55
+                 : 0.0;
+        animate width  { duration: 80ms; easing: ease-out; }
+        animate opacity { duration: 120ms; easing: ease-out; }
+    }
+
+    // Center dot — base indicator, sized by state.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
         width: parent.width * (root.processing ? 0.21
                               : root.active ? 0.38
                               : 0.25);
